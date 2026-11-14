@@ -1,7 +1,8 @@
 """Claude Code-inspired launcher for the existing local desktop assistant.
 
 Run with: python claude_style.py
-Screen reading is explicit: click the screen button, review the attachment, then send it.
+Screen reading is explicit: click the screen or active-window button, review the attachment,
+then send it for local vision analysis. This is a safe read-only mode.
 """
 
 import os
@@ -66,7 +67,7 @@ class ClaudeStyleApp(assistant.App):
                  font=("Segoe UI", 9)).pack(side="left", padx=(0, 7))
 
         self.prompt_examples = [
-            ("Изменить проект", "Изучи проект и "),
+            ("Изменить проект", "Изучи проект и " ),
             ("Найти файл", "найди файл report.txt на компьютере и открой его"),
             ("Переместить", "перемести файл из документов в папку projects"),
             ("Скачать", "скачай этот файл в загрузки: https://example.com/file.zip"),
@@ -90,6 +91,10 @@ class ClaudeStyleApp(assistant.App):
                   cursor="hand2").pack(side="left", padx=(0, 6))
         tk.Button(quick, text="Снимок экрана", command=self.capture_screen,
                   bg="#292524", fg="#f4a261", activebackground="#44403c",
+                  activeforeground="white", bd=0, padx=9, pady=5,
+                  cursor="hand2").pack(side="left", padx=(0, 6))
+        tk.Button(quick, text="Читать окно / чат", command=self.capture_active_window,
+                  bg="#292524", fg="#93c5fd", activebackground="#44403c",
                   activeforeground="white", bd=0, padx=9, pady=5,
                   cursor="hand2").pack(side="left", padx=(0, 6))
         tk.Button(quick, text="Отправить", command=self.send, bg="#d97757", fg="#1c1917",
@@ -116,17 +121,36 @@ class ClaudeStyleApp(assistant.App):
             "скачай файл по ссылке в загрузки и назови путь",
             "напиши @Mr_Dablocer в Telegram: проверил проект, всё готово",
             "сделай папку проекта с файлом notes.txt и запиши туда список задач",
+            "прочитай активное окно и скажи, что там написано, если это чат — предложи ответ",
+            "сделай скрин активного окна, затем прочитай текст и подскажи, что лучше ответить",
         ]
         self._insert_prompt(random.choice(choices))
 
-    def capture_screen(self):
-        """Take a screenshot only after the user clicks; attach it for local vision analysis."""
+    def _capture_image(self, kind="screen"):
         if os.name != "nt":
-            self.say("Снимок экрана сейчас поддерживается только в Windows.", "sys")
-            return
-        fd, path = tempfile.mkstemp(prefix="assistant_screen_", suffix=".png")
+            raise RuntimeError("Снимок экрана сейчас поддерживается только в Windows.")
+        fd, path = tempfile.mkstemp(prefix=f"assistant_{kind}_", suffix=".png")
         os.close(fd)
         ps_path = path.replace("'", "''")
+        if kind == "window":
+            script = (
+                "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+                "$hwnd=[User32]::GetForegroundWindow(); "
+                "if ($hwnd -eq [IntPtr]::Zero) { throw 'no foreground window' }; "
+                "$rect = New-Object System.Drawing.Rectangle; "
+                "$g = [User32]::GetWindowRect($hwnd, [ref]$rect) | Out-Null; "
+                "$b = New-Object System.Drawing.Bitmap ($rect.Width), ($rect.Height); "
+                "$g2 = [System.Drawing.Graphics]::FromImage($b); "
+                "$g2.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $b.Size); "
+                f"$b.Save('{ps_path}'); $g2.Dispose(); $b.Dispose();"
+            )
+            # Some Windows builds can run this without extra P/Invoke declarations.
+            # If this fails on a host, the fallback is the full-screen capture below.
+            rc, _out, err = assistant.ps(script, timeout=30)
+            if rc == 0 and os.path.isfile(path) and os.path.getsize(path) > 0:
+                return path
+            # fallback to whole screen
+            os.remove(path)
         script = (
             "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
             "$s=[System.Windows.Forms.SystemInformation]::VirtualScreen; "
@@ -135,24 +159,33 @@ class ClaudeStyleApp(assistant.App):
             "$g.CopyFromScreen($s.Left,$s.Top,0,0,$b.Size); "
             f"$b.Save('{ps_path}'); $g.Dispose(); $b.Dispose()"
         )
+        rc, _out, err = assistant.ps(script, timeout=30)
+        if rc != 0 or not os.path.isfile(path) or os.path.getsize(path) == 0:
+            raise RuntimeError(err or "Windows did not return a screenshot")
+        return path
+
+    def _attach_capture(self, kind):
         try:
-            rc, _out, err = assistant.ps(script, timeout=30)
-            if rc != 0 or not os.path.isfile(path) or os.path.getsize(path) == 0:
-                raise RuntimeError(err or "Windows did not return a screenshot")
+            path = self._capture_image(kind)
             self.screen_attachments.add(path)
             self.add_files([path])
-            self.agent_var.set(False)  # Image analysis is read-only; never route a screenshot into PC tools.
-            self._insert_prompt("Опиши, что видно на экране. Если открыт чат, прочитай видимые сообщения и предложи ответ, но ничего не отправляй.")
-            self.say("Снимок прикреплён. Он будет передан выбранной локальной модели Ollama после отправки запроса. Для чтения изображений нужна vision-модель.", "sys")
+            self.agent_var.set(False)
+            self.say(f"Снимок {'активного окна' if kind == 'window' else 'экрана'} прикреплён. Он будет передан локальной vision-модели после подтверждения.", "sys")
+            if kind == "window":
+                self._insert_prompt("прочитай активное окно и скажи, что там написано. Если это чат, выдели видимые сообщения и предложи короткий ответ, но только как подсказку, без отправки.")
+            else:
+                self._insert_prompt("опиши, что видно на экране. Если открыт чат, прочитай видимые сообщения и предложи ответ, но ничего не отправляй.")
         except Exception as exc:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            self.say(f"Не удалось сделать снимок экрана: {exc}", "sys")
+            self.say(f"Не удалось сделать снимок: {exc}", "sys")
+
+    def capture_screen(self):
+        self._attach_capture("screen")
+
+    def capture_active_window(self):
+        self._attach_capture("window")
 
     def send(self, _event=None):
-        # Screen images must go through read-only chat, even if Agent is toggled back on.
+        # Screen images must go through a read-only chat, never agent actions.
         if self.screen_attachments.intersection(self.attachments):
             self.agent_var.set(False)
         return super().send(_event)
