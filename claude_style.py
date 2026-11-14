@@ -74,6 +74,8 @@ class ClaudeStyleApp(assistant.App):
             ("Папка", "открой папку загрузки"),
             ("Telegram", "напиши @Mr_Dablocer в Telegram: привет, проверь проект"),
             ("Код", "создай Python проект-менеджер с окном и кнопками"),
+            ("Чат с Даней", "открой Telegram, найди чат с Даней, прочитай последние сообщения и предложи короткий ответ"),
+            ("Читать окно", "прочитай активное окно, если это чат, выдели последние сообщения и предложи ответ"),
             ("Случайно", ""),
         ]
         for label, prompt in self.prompt_examples:
@@ -97,6 +99,10 @@ class ClaudeStyleApp(assistant.App):
                   bg="#292524", fg="#93c5fd", activebackground="#44403c",
                   activeforeground="white", bd=0, padx=9, pady=5,
                   cursor="hand2").pack(side="left", padx=(0, 6))
+        tk.Button(quick, text="Телеграм чат", command=self._fill_chat_prompt,
+                  bg="#292524", fg="#c4b5fd", activebackground="#44403c",
+                  activeforeground="white", bd=0, padx=9, pady=5,
+                  cursor="hand2").pack(side="left", padx=(0, 6))
         tk.Button(quick, text="Отправить", command=self.send, bg="#d97757", fg="#1c1917",
                   activebackground="#ea8a68", bd=0, padx=12, pady=5,
                   font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right")
@@ -104,6 +110,9 @@ class ClaudeStyleApp(assistant.App):
         root.bind("<Control-l>", lambda _event: (self.entry.focus_set(), self.entry.select_range(0, "end")))
         root.bind("<Control-Return>", self.send)
         root.bind("<F1>", lambda _event: self._insert_random_prompt())
+
+    def _fill_chat_prompt(self):
+        self._insert_prompt("открой Telegram, найди чат с Даней, прочитай последние сообщения, выдели контекст, предложи короткий ответ и покажи его на экран, но отправку сделай только после подтверждения")
 
     def _insert_prompt(self, text):
         self.entry.delete(0, "end")
@@ -121,8 +130,8 @@ class ClaudeStyleApp(assistant.App):
             "скачай файл по ссылке в загрузки и назови путь",
             "напиши @Mr_Dablocer в Telegram: проверил проект, всё готово",
             "сделай папку проекта с файлом notes.txt и запиши туда список задач",
+            "открой Telegram, найди чат с Даней, прочитай последние сообщения и предложи короткий ответ",
             "прочитай активное окно и скажи, что там написано, если это чат — предложи ответ",
-            "сделай скрин активного окна, затем прочитай текст и подскажи, что лучше ответить",
         ]
         self._insert_prompt(random.choice(choices))
 
@@ -144,12 +153,9 @@ class ClaudeStyleApp(assistant.App):
                 "$g2.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $b.Size); "
                 f"$b.Save('{ps_path}'); $g2.Dispose(); $b.Dispose();"
             )
-            # Some Windows builds can run this without extra P/Invoke declarations.
-            # If this fails on a host, the fallback is the full-screen capture below.
             rc, _out, err = assistant.ps(script, timeout=30)
             if rc == 0 and os.path.isfile(path) and os.path.getsize(path) > 0:
                 return path
-            # fallback to whole screen
             os.remove(path)
         script = (
             "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
@@ -170,7 +176,7 @@ class ClaudeStyleApp(assistant.App):
             self.screen_attachments.add(path)
             self.add_files([path])
             self.agent_var.set(False)
-            self.say(f"Снимок {'активного окна' if kind == 'window' else 'экрана'} прикреплён. Он будет передан локальной vision-модели после подтверждения.", "sys")
+            self.say(f"Снимок {'активного окна' if kind == 'window' else 'экрана'} прикреплён. Он будет передан локальной vision-модели после отправки запроса.", "sys")
             if kind == "window":
                 self._insert_prompt("прочитай активное окно и скажи, что там написано. Если это чат, выдели видимые сообщения и предложи короткий ответ, но только как подсказку, без отправки.")
             else:
