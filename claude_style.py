@@ -1,11 +1,12 @@
 """Claude Code-inspired launcher for the existing local desktop assistant.
 
 Run with: python claude_style.py
-The assistant and all file/tool safety checks remain implemented in ai_assistant.py.
+Screen reading is explicit: click the screen button, review the attachment, then send it.
 """
 
 import os
 import random
+import tempfile
 import tkinter as tk
 from tkinter import ttk
 
@@ -13,16 +14,17 @@ import ai_assistant as assistant
 
 
 class ClaudeStyleApp(assistant.App):
-    """Keep the existing agent, with a more focused coding-agent default UI."""
+    """Action-oriented UI with explicit, local screen capture for vision questions."""
 
     def load(self):
-        # Preserve saved preferences; use a more free, action-first setup on first launch.
+        # Preserve saved preferences; use an agent-first setup on first launch.
         has_settings = os.path.isfile(assistant.HIST_FILE)
         super().load()
         if not has_settings:
             self.cfg.update(agent=True, full=True, ask=True)
 
     def __init__(self, root):
+        self.screen_attachments = set()
         super().__init__(root)
         root.title("Claude Code style · Локальный агент")
         root.geometry("1180x760")
@@ -52,7 +54,7 @@ class ClaudeStyleApp(assistant.App):
         bar.pack(side="top", fill="x", padx=12, pady=(8, 4), before=self.log)
         tk.Label(bar, text="Локальный агент", bg="#1b1b1b", fg="#f5f5f4",
                  font=("Segoe UI", 13, "bold")).pack(side="left")
-        tk.Label(bar, text="  ·  обычным языком, без команды " + chr(34) + "/" + chr(34) + " и без лишних вопросов",
+        tk.Label(bar, text="  ·  задача обычным языком, агент сам выберет инструменты",
                  bg="#1b1b1b", fg="#a8a29e", font=("Segoe UI", 10)).pack(side="left")
         tk.Button(bar, text="Новый чат", command=self._new_chat,
                   bg="#292524", fg="#e7e5e4", activebackground="#44403c", activeforeground="white",
@@ -64,7 +66,7 @@ class ClaudeStyleApp(assistant.App):
                  font=("Segoe UI", 9)).pack(side="left", padx=(0, 7))
 
         self.prompt_examples = [
-            ("Сделать скрин", "сделай скриншот экрана и сохрани в папку проекта"),
+            ("Изменить проект", "Изучи проект и "),
             ("Найти файл", "найди файл report.txt на компьютере и открой его"),
             ("Переместить", "перемести файл из документов в папку projects"),
             ("Скачать", "скачай этот файл в загрузки: https://example.com/file.zip"),
@@ -73,23 +75,23 @@ class ClaudeStyleApp(assistant.App):
             ("Код", "создай Python проект-менеджер с окном и кнопками"),
             ("Случайно", ""),
         ]
-
         for label, prompt in self.prompt_examples:
-            btn = tk.Button(
+            tk.Button(
                 quick,
                 text=label,
                 command=lambda p=prompt: self._insert_prompt(p) if p else self._insert_random_prompt(),
-                bg="#292524",
-                fg="#d6d3d1",
-                activebackground="#44403c",
-                activeforeground="white",
-                bd=0,
-                padx=9,
-                pady=5,
-                cursor="hand2",
-            )
-            btn.pack(side="left", padx=(0, 6))
+                bg="#292524", fg="#d6d3d1", activebackground="#44403c",
+                activeforeground="white", bd=0, padx=9, pady=5, cursor="hand2",
+            ).pack(side="left", padx=(0, 6))
 
+        tk.Button(quick, text="Читать ссылку", command=lambda: self._insert_prompt("прочитай страницу по ссылке: "),
+                  bg="#292524", fg="#d6d3d1", activebackground="#44403c",
+                  activeforeground="white", bd=0, padx=9, pady=5,
+                  cursor="hand2").pack(side="left", padx=(0, 6))
+        tk.Button(quick, text="Снимок экрана", command=self.capture_screen,
+                  bg="#292524", fg="#f4a261", activebackground="#44403c",
+                  activeforeground="white", bd=0, padx=9, pady=5,
+                  cursor="hand2").pack(side="left", padx=(0, 6))
         tk.Button(quick, text="Отправить", command=self.send, bg="#d97757", fg="#1c1917",
                   activebackground="#ea8a68", bd=0, padx=12, pady=5,
                   font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right")
@@ -108,7 +110,7 @@ class ClaudeStyleApp(assistant.App):
         choices = [
             "сделай скриншот экрана и сохрани в папку проекта",
             "найди файл проекта по имени и открой его",
-            "перемести документ из загрузок в рабочий стол",
+            "перемести документ из загрузок на рабочий стол",
             "создай простой Python-чатбот с кнопками в окне",
             "открой папку с документами и найди самый новый файл",
             "скачай файл по ссылке в загрузки и назови путь",
@@ -116,6 +118,54 @@ class ClaudeStyleApp(assistant.App):
             "сделай папку проекта с файлом notes.txt и запиши туда список задач",
         ]
         self._insert_prompt(random.choice(choices))
+
+    def capture_screen(self):
+        """Take a screenshot only after the user clicks; attach it for local vision analysis."""
+        if os.name != "nt":
+            self.say("Снимок экрана сейчас поддерживается только в Windows.", "sys")
+            return
+        fd, path = tempfile.mkstemp(prefix="assistant_screen_", suffix=".png")
+        os.close(fd)
+        ps_path = path.replace("'", "''")
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+            "$s=[System.Windows.Forms.SystemInformation]::VirtualScreen; "
+            "$b=New-Object System.Drawing.Bitmap $s.Width,$s.Height; "
+            "$g=[System.Drawing.Graphics]::FromImage($b); "
+            "$g.CopyFromScreen($s.Left,$s.Top,0,0,$b.Size); "
+            f"$b.Save('{ps_path}'); $g.Dispose(); $b.Dispose()"
+        )
+        try:
+            rc, _out, err = assistant.ps(script, timeout=30)
+            if rc != 0 or not os.path.isfile(path) or os.path.getsize(path) == 0:
+                raise RuntimeError(err or "Windows did not return a screenshot")
+            self.screen_attachments.add(path)
+            self.add_files([path])
+            self.agent_var.set(False)  # Image analysis is read-only; never route a screenshot into PC tools.
+            self._insert_prompt("Опиши, что видно на экране. Если открыт чат, прочитай видимые сообщения и предложи ответ, но ничего не отправляй.")
+            self.say("Снимок прикреплён. Он будет передан выбранной локальной модели Ollama после отправки запроса. Для чтения изображений нужна vision-модель.", "sys")
+        except Exception as exc:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            self.say(f"Не удалось сделать снимок экрана: {exc}", "sys")
+
+    def send(self, _event=None):
+        # Screen images must go through read-only chat, even if Agent is toggled back on.
+        if self.screen_attachments.intersection(self.attachments):
+            self.agent_var.set(False)
+        return super().send(_event)
+
+    def clear_attach(self):
+        paths = set(self.attachments).intersection(self.screen_attachments)
+        super().clear_attach()
+        for path in paths:
+            self.screen_attachments.discard(path)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     def _new_chat(self):
         self.entry.delete(0, "end")
