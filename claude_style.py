@@ -1,36 +1,42 @@
-"""Claude Code-inspired launcher for the existing local desktop assistant.
+"""Claude Code-inspired desktop assistant launcher.
 
 Run with: python claude_style.py
-Screen reading is explicit: click the screen or active-window button, review the attachment,
-then send it for local vision analysis. This is a safe read-only mode.
+The user opens the requested Telegram chat manually, then captures its visible window.
+Images are sent only to the configured local Ollama model. This workflow drafts replies;
+it does not send anything automatically.
 """
 
 import os
 import random
 import tempfile
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, simpledialog, ttk
 
 import ai_assistant as assistant
 
 
+BG = "#1b1b1b"
+PANEL = "#292524"
+ACCENT = "#d97757"
+
+
 class ClaudeStyleApp(assistant.App):
-    """Action-oriented UI with explicit, local screen capture for vision questions."""
+    """A more focused UI with an explicit read-chat / draft-reply flow."""
 
     def load(self):
-        # Preserve saved preferences; use an agent-first setup on first launch.
         has_settings = os.path.isfile(assistant.HIST_FILE)
         super().load()
         if not has_settings:
-            self.cfg.update(agent=True, full=True, ask=True)
+            self.cfg.update(agent=True, full=False, ask=True)
 
     def __init__(self, root):
         self.screen_attachments = set()
+        self.pending_chat_contact = ""
         super().__init__(root)
-        root.title("Claude Code style · Локальный агент")
+        root.title("Локальный агент · Claude Code style")
         root.geometry("1180x760")
-        root.minsize(920, 560)
-        root.configure(bg="#1b1b1b")
+        root.minsize(900, 560)
+        root.configure(bg=BG)
 
         style = ttk.Style(root)
         try:
@@ -42,77 +48,53 @@ class ClaudeStyleApp(assistant.App):
         style.map("TCombobox", fieldbackground=[("readonly", "#252525")],
                   foreground=[("readonly", "#eeeeee")])
 
-        self.log.configure(bg="#1b1b1b", fg="#e7e5e4", insertbackground="#eeeeee",
+        self.log.configure(bg=BG, fg="#e7e5e4", insertbackground="#eeeeee",
                            padx=18, pady=14, font=("Segoe UI", 11), spacing1=4, spacing3=8)
         self.log.tag_config("me", foreground="#f4a261", font=("Segoe UI", 11, "bold"))
         self.log.tag_config("ai", foreground="#e7e5e4", font=("Segoe UI", 11))
         self.log.tag_config("sys", foreground="#a8a29e", font=("Segoe UI", 10))
-        self.entry.configure(bg="#292524", fg="#f5f5f4", insertbackground="#f5f5f4",
-                            font=("Segoe UI", 12), relief="flat", highlightthickness=1,
-                            highlightbackground="#44403c", highlightcolor="#d97757")
+        self.entry.configure(bg=PANEL, fg="#f5f5f4", insertbackground="#f5f5f4",
+                             font=("Segoe UI", 12), relief="flat", highlightthickness=1,
+                             highlightbackground="#44403c", highlightcolor=ACCENT)
 
-        bar = tk.Frame(root, bg="#1b1b1b")
-        bar.pack(side="top", fill="x", padx=12, pady=(8, 4), before=self.log)
-        tk.Label(bar, text="Локальный агент", bg="#1b1b1b", fg="#f5f5f4",
+        header = tk.Frame(root, bg=BG)
+        header.pack(side="top", fill="x", padx=12, pady=(8, 4), before=self.log)
+        tk.Label(header, text="Локальный агент", bg=BG, fg="#f5f5f4",
                  font=("Segoe UI", 13, "bold")).pack(side="left")
-        tk.Label(bar, text="  ·  задача обычным языком, агент сам выберет инструменты",
-                 bg="#1b1b1b", fg="#a8a29e", font=("Segoe UI", 10)).pack(side="left")
-        tk.Button(bar, text="Новый чат", command=self._new_chat,
-                  bg="#292524", fg="#e7e5e4", activebackground="#44403c", activeforeground="white",
-                  bd=0, padx=10, pady=5, cursor="hand2").pack(side="right")
+        tk.Label(header, text="  ·  обычным языком; перед отправкой сообщений будет подтверждение",
+                 bg=BG, fg="#a8a29e", font=("Segoe UI", 10)).pack(side="left")
+        tk.Button(header, text="Новый чат", command=self._new_chat, bg=PANEL, fg="#e7e5e4",
+                  activebackground="#44403c", activeforeground="white", bd=0, padx=10,
+                  pady=5, cursor="hand2").pack(side="right")
 
-        quick = tk.Frame(root, bg="#1b1b1b")
-        quick.pack(side="top", fill="x", padx=12, pady=(2, 8), before=self.log)
-        tk.Label(quick, text="Попробуй:", bg="#1b1b1b", fg="#a8a29e",
+        actions = tk.Frame(root, bg=BG)
+        actions.pack(side="top", fill="x", padx=12, pady=(2, 8), before=self.log)
+        tk.Label(actions, text="Быстрые действия:", bg=BG, fg="#a8a29e",
                  font=("Segoe UI", 9)).pack(side="left", padx=(0, 7))
-
-        self.prompt_examples = [
-            ("Изменить проект", "Изучи проект и " ),
-            ("Найти файл", "найди файл report.txt на компьютере и открой его"),
-            ("Переместить", "перемести файл из документов в папку projects"),
-            ("Скачать", "скачай этот файл в загрузки: https://example.com/file.zip"),
-            ("Папка", "открой папку загрузки"),
-            ("Telegram", "напиши @Mr_Dablocer в Telegram: привет, проверь проект"),
-            ("Код", "создай Python проект-менеджер с окном и кнопками"),
-            ("Чат с Даней", "открой Telegram, найди чат с Даней, прочитай последние сообщения и предложи короткий ответ"),
-            ("Читать окно", "прочитай активное окно, если это чат, выдели последние сообщения и предложи ответ"),
-            ("Случайно", ""),
-        ]
-        for label, prompt in self.prompt_examples:
-            tk.Button(
-                quick,
-                text=label,
-                command=lambda p=prompt: self._insert_prompt(p) if p else self._insert_random_prompt(),
-                bg="#292524", fg="#d6d3d1", activebackground="#44403c",
-                activeforeground="white", bd=0, padx=9, pady=5, cursor="hand2",
-            ).pack(side="left", padx=(0, 6))
-
-        tk.Button(quick, text="Читать ссылку", command=lambda: self._insert_prompt("прочитай страницу по ссылке: "),
-                  bg="#292524", fg="#d6d3d1", activebackground="#44403c",
-                  activeforeground="white", bd=0, padx=9, pady=5,
-                  cursor="hand2").pack(side="left", padx=(0, 6))
-        tk.Button(quick, text="Снимок экрана", command=self.capture_screen,
-                  bg="#292524", fg="#f4a261", activebackground="#44403c",
-                  activeforeground="white", bd=0, padx=9, pady=5,
-                  cursor="hand2").pack(side="left", padx=(0, 6))
-        tk.Button(quick, text="Читать окно / чат", command=self.capture_active_window,
-                  bg="#292524", fg="#93c5fd", activebackground="#44403c",
-                  activeforeground="white", bd=0, padx=9, pady=5,
-                  cursor="hand2").pack(side="left", padx=(0, 6))
-        tk.Button(quick, text="Телеграм чат", command=self._fill_chat_prompt,
-                  bg="#292524", fg="#c4b5fd", activebackground="#44403c",
-                  activeforeground="white", bd=0, padx=9, pady=5,
-                  cursor="hand2").pack(side="left", padx=(0, 6))
-        tk.Button(quick, text="Отправить", command=self.send, bg="#d97757", fg="#1c1917",
+        self._button(actions, "Telegram: прочитать чат", self.start_telegram_read, "#c4b5fd")
+        self._button(actions, "Прочитать активное окно", self.capture_active_window, "#93c5fd")
+        self._button(actions, "Снимок экрана", self.capture_screen, "#f4a261")
+        self._button(actions, "Читать ссылку", lambda: self._insert_prompt("прочитай страницу по ссылке: "))
+        self._button(actions, "Переместить файл", lambda: self._insert_prompt("перемести файл из документов в "))
+        self._button(actions, "Найти файл", lambda: self._insert_prompt("найди файл "))
+        tk.Button(actions, text="Отправить", command=self.send, bg=ACCENT, fg="#1c1917",
                   activebackground="#ea8a68", bd=0, padx=12, pady=5,
                   font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right")
+
+        tk.Label(root, text=("Telegram workflow: specify a contact → Telegram opens → select and verify the chat yourself → "
+                             "capture the visible window → ask for a draft. Sending always requires a separate confirmation."),
+                 bg=BG, fg="#a8a29e", anchor="w", justify="left", wraplength=1100,
+                 font=("Segoe UI", 9)).pack(side="top", fill="x", padx=14, pady=(0, 4), before=self.log)
 
         root.bind("<Control-l>", lambda _event: (self.entry.focus_set(), self.entry.select_range(0, "end")))
         root.bind("<Control-Return>", self.send)
         root.bind("<F1>", lambda _event: self._insert_random_prompt())
 
-    def _fill_chat_prompt(self):
-        self._insert_prompt("открой Telegram, найди чат с Даней, прочитай последние сообщения, выдели контекст, предложи короткий ответ и покажи его на экран, но отправку сделай только после подтверждения")
+    @staticmethod
+    def _button(parent, text, command, fg="#d6d3d1"):
+        tk.Button(parent, text=text, command=command, bg=PANEL, fg=fg,
+                  activebackground="#44403c", activeforeground="white", bd=0,
+                  padx=8, pady=5, cursor="hand2").pack(side="left", padx=(0, 5))
 
     def _insert_prompt(self, text):
         self.entry.delete(0, "end")
@@ -121,77 +103,112 @@ class ClaudeStyleApp(assistant.App):
         self.entry.icursor("end")
 
     def _insert_random_prompt(self):
-        choices = [
-            "сделай скриншот экрана и сохрани в папку проекта",
-            "найди файл проекта по имени и открой его",
-            "перемести документ из загрузок на рабочий стол",
-            "создай простой Python-чатбот с кнопками в окне",
-            "открой папку с документами и найди самый новый файл",
-            "скачай файл по ссылке в загрузки и назови путь",
-            "напиши @Mr_Dablocer в Telegram: проверил проект, всё готово",
-            "сделай папку проекта с файлом notes.txt и запиши туда список задач",
-            "открой Telegram, найди чат с Даней, прочитай последние сообщения и предложи короткий ответ",
-            "прочитай активное окно и скажи, что там написано, если это чат — предложи ответ",
+        examples = [
+            "сделай скриншот экрана и опиши, что на нём",
+            "найди файл отчёт.txt в загрузках и открой его",
+            "перемести документ из документов на рабочий стол",
+            "прочитай эту страницу и кратко перескажи: https://example.com",
+            "открой Telegram, найди чат с Даней и прочитай видимые последние сообщения",
+            "создай папку проекта и запиши список задач в notes.txt",
         ]
-        self._insert_prompt(random.choice(choices))
+        self._insert_prompt(random.choice(examples))
 
-    def _capture_image(self, kind="screen"):
-        if os.name != "nt":
-            raise RuntimeError("Снимок экрана сейчас поддерживается только в Windows.")
-        fd, path = tempfile.mkstemp(prefix=f"assistant_{kind}_", suffix=".png")
-        os.close(fd)
-        ps_path = path.replace("'", "''")
-        if kind == "window":
-            script = (
-                "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
-                "$hwnd=[User32]::GetForegroundWindow(); "
-                "if ($hwnd -eq [IntPtr]::Zero) { throw 'no foreground window' }; "
-                "$rect = New-Object System.Drawing.Rectangle; "
-                "$g = [User32]::GetWindowRect($hwnd, [ref]$rect) | Out-Null; "
-                "$b = New-Object System.Drawing.Bitmap ($rect.Width), ($rect.Height); "
-                "$g2 = [System.Drawing.Graphics]::FromImage($b); "
-                "$g2.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $b.Size); "
-                f"$b.Save('{ps_path}'); $g2.Dispose(); $b.Dispose();"
-            )
-            rc, _out, err = assistant.ps(script, timeout=30)
-            if rc == 0 and os.path.isfile(path) and os.path.getsize(path) > 0:
-                return path
-            os.remove(path)
-        script = (
-            "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
-            "$s=[System.Windows.Forms.SystemInformation]::VirtualScreen; "
-            "$b=New-Object System.Drawing.Bitmap $s.Width,$s.Height; "
-            "$g=[System.Drawing.Graphics]::FromImage($b); "
-            "$g.CopyFromScreen($s.Left,$s.Top,0,0,$b.Size); "
-            f"$b.Save('{ps_path}'); $g.Dispose(); $b.Dispose()"
+    def start_telegram_read(self):
+        """Open Telegram, but leave contact selection to the user to avoid wrong-recipient actions."""
+        contact = simpledialog.askstring("Telegram", "Какой чат открыть? (имя или @username)", parent=self.root)
+        if not contact or not contact.strip():
+            return
+        self.pending_chat_contact = contact.strip()
+        ok, message = assistant.run_action("open_app", "telegram", self.confirm)
+        if not ok:
+            messagebox.showerror("Telegram", message, parent=self.root)
+            return
+        self.say(f"{message} Найди и проверь чат «{self.pending_chat_contact}» в Telegram, затем нажми «Прочитать активное окно».", "sys")
+        self._insert_prompt(
+            f"Прочитай прикреплённый снимок окна Telegram. Я ищу чат «{self.pending_chat_contact}». "
+            "Сначала скажи, какое имя чата видно, затем кратко перескажи только видимые последние сообщения и предложи черновик ответа. "
+            "Не отправляй сообщение и не утверждай, что это нужный чат, если заголовок не читается."
         )
-        rc, _out, err = assistant.ps(script, timeout=30)
-        if rc != 0 or not os.path.isfile(path) or os.path.getsize(path) == 0:
-            raise RuntimeError(err or "Windows did not return a screenshot")
-        return path
+        messagebox.showinfo(
+            "Выбери чат вручную",
+            f"Telegram открыт. Сам выбери чат «{self.pending_chat_contact}» и проверь имя в заголовке.\n\n"
+            "После этого вернись сюда и нажми «Прочитать активное окно». Ассистент увидит только снимок видимой части окна. "
+            "Сообщение будет только предложено как черновик; отправки не будет.",
+            parent=self.root,
+        )
 
-    def _attach_capture(self, kind):
+    @staticmethod
+    def _powershell_capture(path, active_window=False):
+        """Capture the foreground window or virtual desktop using built-in Windows APIs."""
+        escaped = path.replace("'", "''")
+        if active_window:
+            script = r'''$src = @"
+using System;
+using System.Runtime.InteropServices;
+public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+public static class WinCapture {
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+}
+"@; Add-Type -TypeDefinition $src; Add-Type -AssemblyName System.Drawing; $h=[WinCapture]::GetForegroundWindow(); $r=New-Object RECT; if ($h -eq [IntPtr]::Zero -or -not [WinCapture]::GetWindowRect($h,[ref]$r)) { throw 'No foreground window' }; $w=$r.Right-$r.Left; $hh=$r.Bottom-$r.Top; if ($w -le 0 -or $hh -le 0) { throw 'Window is minimized or has invalid size' }; $b=New-Object System.Drawing.Bitmap($w,$hh); $g=[System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($r.Left,$r.Top,0,0,$b.Size); $b.Save('__OUT__',[System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $b.Dispose()'''
+        else:
+            script = r'''Add-Type -AssemblyName System.Windows.Forms,System.Drawing; $s=[System.Windows.Forms.SystemInformation]::VirtualScreen; $b=New-Object System.Drawing.Bitmap($s.Width,$s.Height); $g=[System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($s.Left,$s.Top,0,0,$b.Size); $b.Save('__OUT__',[System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $b.Dispose()'''
+        script = script.replace("__OUT__", escaped)
+        rc, _stdout, stderr = assistant.ps(script, timeout=30)
+        if rc != 0 or not os.path.isfile(path) or os.path.getsize(path) == 0:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            raise RuntimeError(stderr or "Windows did not return a screenshot")
+
+    def _capture_after_minimize(self, active_window):
+        """Minimize our own UI so the foreground screenshot is the user's other app."""
+        if os.name != "nt":
+            self.say("Снимок экрана поддерживается только в Windows.", "sys")
+            return
+        self.root.iconify()
+        self.root.after(900, lambda: self._finish_capture(active_window))
+
+    def _finish_capture(self, active_window):
+        fd, path = tempfile.mkstemp(prefix="assistant_window_" if active_window else "assistant_screen_", suffix=".png")
+        os.close(fd)
         try:
-            path = self._capture_image(kind)
+            self._powershell_capture(path, active_window=active_window)
             self.screen_attachments.add(path)
             self.add_files([path])
-            self.agent_var.set(False)
-            self.say(f"Снимок {'активного окна' if kind == 'window' else 'экрана'} прикреплён. Он будет передан локальной vision-модели после отправки запроса.", "sys")
-            if kind == "window":
-                self._insert_prompt("прочитай активное окно и скажи, что там написано. Если это чат, выдели видимые сообщения и предложи короткий ответ, но только как подсказку, без отправки.")
+            self.agent_var.set(False)  # Image analysis is read-only; never route it to PC-action tools.
+            if active_window and self.pending_chat_contact:
+                prompt = (
+                    f"Прочитай снимок активного окна. Я попросил проверить чат «{self.pending_chat_contact}». "
+                    "Сначала назови заголовок, который действительно виден. Если это не тот чат или заголовок неразборчив, остановись и скажи об этом. "
+                    "Иначе кратко перескажи только видимые последние сообщения и предложи черновик ответа. Ничего не отправляй."
+                )
+            elif active_window:
+                prompt = "Прочитай снимок активного окна и кратко опиши видимый текст. Если это переписка, предложи черновик ответа, ничего не отправляя."
             else:
-                self._insert_prompt("опиши, что видно на экране. Если открыт чат, прочитай видимые сообщения и предложи ответ, но ничего не отправляй.")
+                prompt = "Опиши, что видно на снимке экрана. Если открыт чат, читай только видимые сообщения и предложи ответ как черновик, не отправляй его."
+            self._insert_prompt(prompt)
+            self.say("Снимок прикреплён. Он будет передан выбранной локальной vision-модели после отправки запроса.", "sys")
         except Exception as exc:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
             self.say(f"Не удалось сделать снимок: {exc}", "sys")
+        finally:
+            self.root.deiconify()
+            self.root.lift()
+            self.entry.focus_set()
 
     def capture_screen(self):
-        self._attach_capture("screen")
+        self._capture_after_minimize(active_window=False)
 
     def capture_active_window(self):
-        self._attach_capture("window")
+        self._capture_after_minimize(active_window=True)
 
     def send(self, _event=None):
-        # Screen images must go through a read-only chat, never agent actions.
+        # Screen images must go through read-only chat, never agent actions.
         if self.screen_attachments.intersection(self.attachments):
             self.agent_var.set(False)
         return super().send(_event)
@@ -207,6 +224,8 @@ class ClaudeStyleApp(assistant.App):
                 pass
 
     def _new_chat(self):
+        if self.attachments:
+            self.clear_attach()
         self.entry.delete(0, "end")
         self.history = []
         self.last = None
