@@ -93,8 +93,9 @@ class ClaudeStyleApp(assistant.App):
         if owner:
             owner_title, _, _, _ = self._window_details(owner)
             raise RuntimeError(
-                f"В Telegram открыто модальное окно «{title or class_name}» (главное окно: «{owner_title}"). "
-                "Закрой это окно и повтори запрос; ввод в диалог остановлен, чтобы не испортить поля."
+                f"В Telegram открыто модальное окно «{title or class_name}» "
+                f"(главное окно: «{owner_title}»). Закрой это окно и повтори запрос; "
+                "ввод в диалог остановлен, чтобы не испортить поля."
             )
         if not title:
             raise RuntimeError("У активного окна Telegram пустой заголовок; ввод остановлен.")
@@ -132,7 +133,6 @@ class ClaudeStyleApp(assistant.App):
         if not ok:
             raise RuntimeError(message)
         time.sleep(1.0)
-        # Critical guard: this catches the Add Link / other modal shown in the user's screenshot.
         hwnd, _ = self._checked_telegram_window()
         self._telegram_hwnd = hwnd
 
@@ -145,7 +145,7 @@ class ClaudeStyleApp(assistant.App):
         self._focus_checked_window(hwnd)
         if self.stop.is_set():
             return
-        assistant.hotkey(0x0D)  # open top search match
+        assistant.hotkey(0x0D)
         time.sleep(1.0)
         hwnd, visible_title = self._checked_telegram_window()
         if hwnd != self._telegram_hwnd:
@@ -168,7 +168,6 @@ class ClaudeStyleApp(assistant.App):
         title, summary, draft = result["chat_title"], result["summary"], result["draft"]
         if not title or not draft:
             raise RuntimeError("Не удалось уверенно распознать заголовок чата/сообщения; отправки не будет.")
-        # The model's OCR is uncertain; the explicit preview is the user's final recipient check.
         preview = (
             f"Окно Telegram: {visible_title}\nРаспознанный чат: {title}\n\n"
             f"Видимые последние сообщения:\n{summary[:1000]}\n\n"
@@ -181,15 +180,12 @@ class ClaudeStyleApp(assistant.App):
         if self.stop.is_set():
             return
 
-        # Do not call telegram_send(): it re-runs a blind search and could choose another result.
-        # Send only into the same foreground Telegram chat window the user just approved.
         self.q.put(("status", "проверяю тот же чат перед отправкой..."))
         self._focus_checked_window(hwnd, expected_title=visible_title)
         if self.stop.is_set():
             return
         assistant.type_unicode(draft)
         time.sleep(0.25)
-        # A second confirmation makes the irreversible send a distinct deliberate action.
         if not self.confirm(f"Последняя проверка — отправить в Telegram ({title})?\n\n{draft}"):
             raise RuntimeError("Отправка отменена; черновик не отправлен.")
         self._focus_checked_window(hwnd, expected_title=visible_title)
